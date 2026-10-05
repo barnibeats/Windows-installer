@@ -200,12 +200,13 @@ static class WinDeploy
         if (w.EnableAdmin)
         {
             // the built-in Administrator is found by its SID (-500), so the account name does not depend on the language
-            string ps = "Get-LocalUser | Where-Object { $_.SID.Value -like '*-500' } | Enable-LocalUser";
+            // Path is limited to 259 characters by the answer file schema, so the command is kept short
+            string ps = "Get-LocalUser|?{$_.SID -like '*-500'}|Enable-LocalUser";
             x.AppendLine("    <component name=\"Microsoft-Windows-Deployment\" " + head + ">");
             x.AppendLine("      <RunSynchronous>");
             x.AppendLine("        <RunSynchronousCommand wcm:action=\"add\">");
             x.AppendLine("          <Order>1</Order>");
-            El(x, 10, "Path", "cmd.exe /c \"powershell.exe -NoProfile -ExecutionPolicy Bypass -EncodedCommand " + Enc(ps) + " & exit /b 0\"");
+            El(x, 10, "Path", "powershell.exe -NoP -EP Bypass -EC " + Enc(ps));
             x.AppendLine("        </RunSynchronousCommand>");
             x.AppendLine("      </RunSynchronous>");
             x.AppendLine("    </component>");

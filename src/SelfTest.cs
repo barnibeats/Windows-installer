@@ -156,6 +156,15 @@ static class SelfTest
                 full.Contains("<CopyProfile>false</CopyProfile>") && full.Contains("C:\\WINDOWS\\system32\\pretail.cmd") && full.Contains("<SkipRearm>1</SkipRearm>"), null);
         }
         catch (Exception ex) { Check("win xml: well-formed", false, ex.Message); }
+        try
+        {
+            System.Xml.XmlDocument px = new System.Xml.XmlDocument(); px.LoadXml(full);
+            int longest = 0;
+            foreach (System.Xml.XmlNode n in px.GetElementsByTagName("Path")) longest = Math.Max(longest, n.InnerText.Length);
+            foreach (System.Xml.XmlNode n in px.GetElementsByTagName("CommandLine")) longest = Math.Max(longest, n.InnerText.Length);
+            Check("win xml: command lines stay within the 259 character limit of the answer file schema", longest > 0 && longest <= 259, longest + " chars");
+        }
+        catch (Exception ex) { Check("win xml: command line length", false, ex.Message); }
         Check("win xml: accounts, auto logon (1 logon) and passwords as the answer file expects",
             full.Contains(b1) && full.Contains(b2) && full.Contains("<LogonCount>1</LogonCount>") && full.Contains("<Name>Пользователь</Name>"), null);
         Check("win xml for the capture image has no passwords, accounts or auto logon",

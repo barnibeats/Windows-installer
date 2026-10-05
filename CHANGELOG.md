@@ -1,5 +1,10 @@
 # Changelog
 
+## 1.1.1 - 2026-10-05
+
+- Fix: Windows rejected the generated answer file in the specialize pass ("invalid answer file"). The command that enables the built-in Administrator was longer than the 259 characters the answer file allows; it is shorter now.
+- Self-test checks the command length of the generated answer file.
+
 ## 1.1.0 - 2026-10-05
 
 - New: Windows settings (answer file + first-logon script). A dialog collects organization, time zone, keyboards, DNS, accounts, auto logon, RDP port, KMS server and system options.
