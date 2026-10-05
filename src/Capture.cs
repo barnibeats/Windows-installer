@@ -26,6 +26,7 @@ static class Env
     {
         get
         {
+            if (Environment.GetEnvironmentVariable("WI_FORCE_WINPE") == "1") return true;   // developer switch: preview the WinPE screens in Windows
             if ((Environment.GetEnvironmentVariable("SystemDrive") ?? "").ToUpperInvariant() == "X:") return true;
             try { using (RegistryKey k = Registry.LocalMachine.OpenSubKey(@"SYSTEM\CurrentControlSet\Control\MiniNT")) { return k != null; } }
             catch (Exception) { return false; }

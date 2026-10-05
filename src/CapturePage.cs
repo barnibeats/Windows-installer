@@ -118,7 +118,6 @@ class CapturePage : Page
         lblSrc.Text = S.T("cap.src"); btnSrcRefresh.Text = S.T("cap.btn.refresh"); btnCapture.Text = S.T("cap.btn.capture");
         help.Text = S.T(winpe ? "cap.help.winpe" : "cap.help.win");
         if (!busy) lblStatus.Text = S.T("cap.ready");
-        lvChecks.Columns[0].Text = ""; lvChecks.Columns[1].Text = "";
         if (winpe) { List<string> t = new List<string>(); foreach (WinVolume v in volumes) t.Add(v.Title); if (t.Count > 0) ddSrc.UpdateItems(t); }
         ddSrc.Placeholder = S.T("cap.src.none");
         if (lastChecks != null) FillChecks(lastChecks);
