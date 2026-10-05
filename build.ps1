@@ -85,7 +85,7 @@ $out = Join-Path $root "WindowsInstaller.exe"
 $files = Get-ChildItem $src -Filter *.cs | Where-Object { $_.Name -ne "AppInfo.cs" } | ForEach-Object { $_.FullName }
 & "$fx\csc.exe" /nologo /target:winexe /platform:anycpu /optimize+ /codepage:65001 /out:"$out" `
     /win32icon:"$obj\app.ico" /win32manifest:"$src\app.manifest" `
-    /r:System.Windows.Forms.dll /r:System.Drawing.dll /r:System.Core.dll /r:System.Management.dll /r:System.Web.Extensions.dll `
+    /r:System.Windows.Forms.dll /r:System.Drawing.dll /r:System.Core.dll /r:System.Management.dll `
     $files "$obj\AppInfo.cs"
 if ($LASTEXITCODE -ne 0) { throw "Build failed" }
 Write-Host ("Built: {0} v{1} ({2:N0} KB)" -f $out, $Version, ((Get-Item $out).Length / 1KB))

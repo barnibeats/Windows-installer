@@ -1,5 +1,11 @@
 # Changelog
 
+## 1.0.2 - 2026-10-05
+
+- Fix: the update check failed in WinPE (System.Web.Extensions is missing there). JSON is now read without extra assemblies.
+- The disk list falls back to PowerShell/WMI when System.Management is not available.
+- Self-test: compares both disk readers and reads the real latest.json.
+
 ## 1.0.1 - 2026-10-05
 
 - Fix: the app crashed on start in WinPE (the Capture tab touched table columns that exist only in a normal Windows).

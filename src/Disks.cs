@@ -1,8 +1,11 @@
 // Physical disk enumeration through WMI (works in WinPE, where the PowerShell Storage module is missing).
+// Primary path: System.Management. If that assembly is missing in the environment (some WinPE builds),
+// the same data is read through PowerShell (Get-CimInstance / Get-WmiObject).
 using System;
 using System.Collections.Generic;
 using System.IO;
 using System.Management;
+using System.Runtime.CompilerServices;
 using System.Text.RegularExpressions;
 
 class DiskInfo
@@ -20,10 +23,58 @@ class DiskInfo
     public string VolumesText { get { return string.Join(",  ", Volumes.ToArray()); } }
 }
 
+// Raw rows, independent of how they were read.
+class RawDrive { public int Index; public long Size; public string Model = "", Interface = "", Pnp = ""; }
+class RawPartition { public int DiskIndex; public string Type = ""; }
+class RawData
+{
+    public List<RawDrive> Drives = new List<RawDrive>();
+    public List<RawPartition> Partitions = new List<RawPartition>();
+    public Dictionary<string, int> Letters = new Dictionary<string, int>(StringComparer.OrdinalIgnoreCase);   // "C:" -> disk
+}
+
 static class Disks
 {
     static readonly Regex DiskNo = new Regex(@"Disk #(\d+)");
     static readonly Regex Letter = new Regex(@"([A-Za-z]:)""?$");
+
+    static void AddMap(RawData d, string antecedent, string dependent)
+    {
+        Match m1 = DiskNo.Match(antecedent ?? "");
+        Match m2 = Letter.Match(dependent ?? "");
+        if (m1.Success && m2.Success) d.Letters[m2.Groups[1].Value.ToUpperInvariant()] = int.Parse(m1.Groups[1].Value);
+    }
+
+    // ---- reading: System.Management -------------------------------------------------------------
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    public static RawData ReadWithManagement()
+    {
+        RawData d = new RawData();
+        foreach (ManagementObject o in Query("SELECT * FROM Win32_DiskDrive"))
+        {
+            RawDrive r = new RawDrive();
+            r.Index = Convert.ToInt32(o["Index"]);
+            try { r.Size = Convert.ToInt64(o["Size"]); } catch (Exception) { }
+            r.Model = Convert.ToString(o["Model"]) ?? "";
+            r.Interface = Convert.ToString(o["InterfaceType"]) ?? "";
+            r.Pnp = Convert.ToString(o["PNPDeviceID"]) ?? "";
+            d.Drives.Add(r);
+        }
+        foreach (ManagementObject o in Query("SELECT DiskIndex, Type FROM Win32_DiskPartition"))
+        {
+            RawPartition p = new RawPartition();
+            p.DiskIndex = Convert.ToInt32(o["DiskIndex"]);
+            p.Type = Convert.ToString(o["Type"]) ?? "";
+            d.Partitions.Add(p);
+        }
+        try
+        {
+            foreach (ManagementObject a in Query("SELECT * FROM Win32_LogicalDiskToPartition"))
+                AddMap(d, Convert.ToString(a["Antecedent"]), Convert.ToString(a["Dependent"]));
+        }
+        catch (Exception) { }
+        return d;
+    }
 
     static List<ManagementObject> Query(string wql)
     {
@@ -33,49 +84,83 @@ static class Disks
         return res;
     }
 
+    // ---- reading: PowerShell fallback ---------------------------------------------------------------
+    const string PsScript =
+@"function G($c) { try { Get-CimInstance -ClassName $c -ErrorAction Stop } catch { Get-WmiObject -Class $c } }
+G Win32_DiskDrive | ForEach-Object { 'D|' + $_.Index + '|' + $_.Size + '|' + $_.InterfaceType + '|' + $_.PNPDeviceID + '|' + $_.Model }
+G Win32_DiskPartition | ForEach-Object { 'P|' + $_.DiskIndex + '|' + $_.Type }
+G Win32_LogicalDiskToPartition | ForEach-Object { $a = $_.Antecedent; $b = $_.Dependent; if ($a -isnot [string]) { $a = $a.DeviceID }; if ($b -isnot [string]) { $b = $b.DeviceID }; 'M|' + $a + '|' + $b }
+";
+
+    public static RawData ReadWithPowerShell()
+    {
+        string output;
+        Ps.Run(PsScript, out output);
+        RawData d = new RawData();
+        foreach (string raw in output.Split('\n'))
+        {
+            string line = raw.Trim();
+            if (line.Length < 3 || line[1] != '|') continue;
+            string[] f = line.Split('|');
+            try
+            {
+                if (f[0] == "D")
+                {
+                    RawDrive r = new RawDrive();
+                    r.Index = int.Parse(f[1]);
+                    long sz; long.TryParse(f[2], out sz); r.Size = sz;
+                    r.Interface = f[3]; r.Pnp = f[4];
+                    r.Model = string.Join("|", f, 5, f.Length - 5);
+                    d.Drives.Add(r);
+                }
+                else if (f[0] == "P") { RawPartition p = new RawPartition(); p.DiskIndex = int.Parse(f[1]); p.Type = f[2]; d.Partitions.Add(p); }
+                else if (f[0] == "M") AddMap(d, f[1], f[2]);
+            }
+            catch (Exception) { }
+        }
+        if (d.Drives.Count == 0) throw new InvalidOperationException("no disks reported by WMI");
+        return d;
+    }
+
+    static RawData Read()
+    {
+        try { return ReadWithManagement(); }
+        catch (FileNotFoundException) { }       // System.Management is not available here
+        catch (TypeLoadException) { }
+        catch (BadImageFormatException) { }
+        return ReadWithPowerShell();
+    }
+
     // "C:" -> physical disk number
     public static Dictionary<string, int> LetterMap()
     {
-        Dictionary<string, int> map = new Dictionary<string, int>(StringComparer.OrdinalIgnoreCase);
-        try
-        {
-            foreach (ManagementObject a in Query("SELECT * FROM Win32_LogicalDiskToPartition"))
-            {
-                Match m1 = DiskNo.Match(Convert.ToString(a["Antecedent"]));
-                Match m2 = Letter.Match(Convert.ToString(a["Dependent"]));
-                if (m1.Success && m2.Success) map[m2.Groups[1].Value.ToUpperInvariant()] = int.Parse(m1.Groups[1].Value);
-            }
-        }
-        catch (Exception) { }
-        return map;
+        try { return Read().Letters; } catch (Exception) { return new Dictionary<string, int>(StringComparer.OrdinalIgnoreCase); }
     }
 
     public static int DiskOfDrive(string drive)   // "E:" or "E:\..." ; -1 if unknown
     {
         if (string.IsNullOrEmpty(drive) || drive.Length < 2) return -1;
-        Dictionary<string, int> map = LetterMap();
         int n;
-        return map.TryGetValue(drive.Substring(0, 2), out n) ? n : -1;
+        return LetterMap().TryGetValue(drive.Substring(0, 2), out n) ? n : -1;
     }
 
-    static string Bus(ManagementObject d)
+    static string Bus(RawDrive d)
     {
-        string pnp = (Convert.ToString(d["PNPDeviceID"]) ?? "").ToUpperInvariant();
-        string model = (Convert.ToString(d["Model"]) ?? "").ToUpperInvariant();
-        string itf = Convert.ToString(d["InterfaceType"]) ?? "";
-        if (pnp.StartsWith("USBSTOR") || itf.ToUpperInvariant() == "USB") return "USB";
+        string pnp = d.Pnp.ToUpperInvariant();
+        string model = d.Model.ToUpperInvariant();
+        string itf = d.Interface.ToUpperInvariant();
+        if (pnp.StartsWith("USBSTOR") || itf == "USB") return "USB";
         if (pnp.Contains("NVME") || model.Contains("NVME")) return "NVMe";
-        if (itf.ToUpperInvariant() == "IDE") return "SATA";
-        return itf;
+        if (itf == "IDE") return "SATA";
+        return d.Interface;
     }
 
     // blockedDrives: drive letters (e.g. "E:") whose physical disks must not be offered as a target
     // (the image file, the running program).
     public static List<DiskInfo> List(IEnumerable<string> blockedDrives)
     {
-        List<DiskInfo> res = new List<DiskInfo>();
-        Dictionary<string, int> map = LetterMap();
-        List<ManagementObject> parts = Query("SELECT DiskIndex, Type FROM Win32_DiskPartition");
+        RawData raw = Read();
+        Dictionary<string, int> map = raw.Letters;
 
         HashSet<int> blocked = new HashSet<int>();
         if (blockedDrives != null)
@@ -88,24 +173,23 @@ static class Disks
         string sysDrive = (Environment.GetEnvironmentVariable("SystemDrive") ?? "").ToUpperInvariant();
         if (sysDrive != "X:" && sysDrive.Length == 2) { int n; if (map.TryGetValue(sysDrive, out n)) sysDisk = n; }
 
-        foreach (ManagementObject d in Query("SELECT * FROM Win32_DiskDrive"))
+        List<DiskInfo> res = new List<DiskInfo>();
+        foreach (RawDrive d in raw.Drives)
         {
-            long size = 0;
-            try { size = Convert.ToInt64(d["Size"]); } catch (Exception) { }
-            if (size <= 0) continue;   // empty card reader
+            if (d.Size <= 0) continue;   // empty card reader
             DiskInfo di = new DiskInfo();
-            di.Number = Convert.ToInt32(d["Index"]);
-            di.Model = Convert.ToString(d["Model"]);
-            di.PnpId = Convert.ToString(d["PNPDeviceID"]) ?? "";
-            di.Size = size;
+            di.Number = d.Index;
+            di.Model = d.Model;
+            di.PnpId = d.Pnp;
+            di.Size = d.Size;
             di.Bus = Bus(d);
 
             int count = 0; bool gpt = false;
-            foreach (ManagementObject p in parts)
+            foreach (RawPartition p in raw.Partitions)
             {
-                if (Convert.ToInt32(p["DiskIndex"]) != di.Number) continue;
+                if (p.DiskIndex != di.Number) continue;
                 count++;
-                if ((Convert.ToString(p["Type"]) ?? "").StartsWith("GPT")) gpt = true;
+                if (p.Type.StartsWith("GPT")) gpt = true;
             }
             di.Style = count == 0 ? "RAW" : (gpt ? "GPT" : "MBR");
 

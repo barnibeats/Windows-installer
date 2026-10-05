@@ -11,7 +11,6 @@ using System.Security.Cryptography;
 using System.Security.Cryptography.X509Certificates;
 using System.Text;
 using System.Text.RegularExpressions;
-using System.Web.Script.Serialization;
 using System.Windows.Forms;
 
 class UpdateInfo
@@ -80,22 +79,35 @@ static class Updater
         catch (Exception ex) { Error = ex.Message; Raise("error"); }
     }
 
-    static UpdateInfo FetchLatest()
+    // Tiny JSON field readers: the files are small and flat, and this keeps the exe free of extra assemblies
+    // (WinPE often lacks System.Web.Extensions).
+    static string JStr(string json, string key)
     {
-        ServicePointManager.SecurityProtocol = (SecurityProtocolType)3072 | SecurityProtocolType.Tls;   // TLS 1.2 for GitHub
-        JavaScriptSerializer json = new JavaScriptSerializer();
+        Match m = Regex.Match(json, "\"" + Regex.Escape(key) + "\"\\s*:\\s*\"((?:[^\"\\\\]|\\\\.)*)\"");
+        return m.Success ? m.Groups[1].Value.Replace("\\/", "/").Replace("\\\"", "\"").Replace("\\\\", "\\") : "";
+    }
+
+    static long JNum(string json, string key)
+    {
+        Match m = Regex.Match(json, "\"" + Regex.Escape(key) + "\"\\s*:\\s*(\\d+)");
+        long v;
+        return m.Success && long.TryParse(m.Groups[1].Value, out v) ? v : 0;
+    }
+
+    public static UpdateInfo FetchLatest()
+    {
+        try { ServicePointManager.SecurityProtocol = (SecurityProtocolType)3072 | SecurityProtocolType.Tls; } catch (Exception) { }   // TLS 1.2 for GitHub
         try
         {
             using (WebClient wc = NewClient())
             {
                 string text = wc.DownloadString("https://github.com/" + AppInfo.Repo + "/releases/latest/download/latest.json");
-                Dictionary<string, object> j = json.Deserialize<Dictionary<string, object>>(text);
                 UpdateInfo u = new UpdateInfo();
-                u.Tag = Convert.ToString(j["version"]);
-                u.Url = Convert.ToString(j["url"]);
-                u.Size = Convert.ToInt64(j["size"]);
-                u.Sha256 = j.ContainsKey("sha256") ? Convert.ToString(j["sha256"]) : "";
-                return u;
+                u.Tag = JStr(text, "version");
+                u.Url = JStr(text, "url");
+                u.Size = JNum(text, "size");
+                u.Sha256 = JStr(text, "sha256");
+                if (u.Tag.Length > 0 && u.Url.Length > 0 && u.Size > 0) return u;
             }
         }
         catch (Exception) { }
@@ -103,21 +115,19 @@ static class Updater
         {
             using (WebClient wc = NewClient())
             {
-                Dictionary<string, object> rel = json.Deserialize<Dictionary<string, object>>(wc.DownloadString("https://api.github.com/repos/" + AppInfo.Repo + "/releases/latest"));
-                Dictionary<string, object> asset = ((ArrayList)rel["assets"]).OfType<Dictionary<string, object>>()
-                    .FirstOrDefault(delegate(Dictionary<string, object> a) { return Convert.ToString(a["name"]).EndsWith(".exe", StringComparison.OrdinalIgnoreCase); });
-                if (asset == null) return null;
+                string rel = wc.DownloadString("https://api.github.com/repos/" + AppInfo.Repo + "/releases/latest");
+                Match asset = Regex.Match(rel, "\\{[^{}]*\"name\"\\s*:\\s*\"[^\"]*\\.exe\"[^{}]*\\}");
+                if (!asset.Success) return null;
                 UpdateInfo u = new UpdateInfo();
-                u.Tag = Convert.ToString(rel["tag_name"]);
-                u.Url = Convert.ToString(asset["browser_download_url"]);
-                u.Size = Convert.ToInt64(asset["size"]);
+                u.Tag = JStr(rel, "tag_name");
+                u.Url = JStr(asset.Value, "browser_download_url");
+                u.Size = JNum(asset.Value, "size");
                 u.Sha256 = "";
-                return u;
+                return u.Tag.Length > 0 && u.Url.Length > 0 ? u : null;
             }
         }
         catch (Exception) { return null; }
     }
-
     public static bool CanWriteNextTo(string exe)
     {
         try

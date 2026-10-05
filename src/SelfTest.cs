@@ -194,6 +194,23 @@ static class SelfTest
             if (!Env.IsWinPE) Check("system disk is blocked", blockedCount >= 1, null);
         }
         catch (Exception ex) { Check("WMI disk list", false, ex.Message); }
+        try
+        {
+            UpdateInfo u = Updater.FetchLatest();
+            if (u == null) sb.AppendLine("INFO  update check skipped (no network?)");
+            else Check("updater reads latest.json from GitHub", u.Tag.StartsWith("v") && u.Url.EndsWith(".exe") && u.Size > 100000 && u.Sha256.Length == 64, u.Tag + ", " + u.Size + " bytes, sha " + u.Sha256.Substring(0, 8) + "...");
+        }
+        catch (Exception ex) { Check("updater reads latest.json from GitHub", false, ex.Message); }
+        try
+        {
+            RawData a = Disks.ReadWithManagement(), b = Disks.ReadWithPowerShell();
+            bool same = a.Drives.Count == b.Drives.Count && a.Partitions.Count == b.Partitions.Count && a.Letters.Count == b.Letters.Count;
+            for (int i = 0; same && i < a.Drives.Count; i++)
+                same = a.Drives[i].Index == b.Drives[i].Index && a.Drives[i].Size == b.Drives[i].Size && a.Drives[i].Pnp == b.Drives[i].Pnp;
+            foreach (KeyValuePair<string, int> kv in a.Letters) { int n; if (!b.Letters.TryGetValue(kv.Key, out n) || n != kv.Value) same = false; }
+            Check("disk list: PowerShell fallback equals System.Management", same, a.Drives.Count + " drives, " + a.Letters.Count + " letters");
+        }
+        catch (Exception ex) { Check("disk list: PowerShell fallback equals System.Management", false, ex.Message); }
         List<string> free = Disks.FreeLetters();
         Check("free drive letters available", free.Count >= 4, free.Count + " free");
         try
