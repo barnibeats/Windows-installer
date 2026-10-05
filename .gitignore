@@ -1,0 +1,6 @@
+# build output - published as release assets, not committed
+WindowsInstaller.exe
+obj/
+bin/
+*.vhdx
+*.vhd

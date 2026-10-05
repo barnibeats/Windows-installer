@@ -1,0 +1,206 @@
+// "WindowsInstaller.exe --selftest <file>": checks the non-destructive logic and writes a report.
+// Nothing is changed on the machine. Used by the build to catch regressions.
+using System;
+using System.Collections.Generic;
+using System.IO;
+using System.Text;
+using System.Text.RegularExpressions;
+
+static class SelfTest
+{
+    static StringBuilder sb = new StringBuilder();
+    static int fails;
+
+    static void Check(string name, bool ok, string detail)
+    {
+        if (!ok) fails++;
+        sb.AppendLine((ok ? "PASS  " : "FAIL  ") + name + (detail != null && detail.Length > 0 ? "  - " + detail : ""));
+    }
+
+    static bool Has(List<string> l, string line) { return l.Contains(line); }
+
+    // "--e2e <diskNumber> <imageFile> <index> <gpt|mbr> [winGb]": a REAL install, allowed only onto a virtual disk
+    // (a VHD/VHDX created for the test). Refuses any other disk. Writes the log to the given self-test file.
+    public static int RunE2E(string outFile, string[] a)
+    {
+        int diskNo = int.Parse(a[0]);
+        InstallOptions o = new InstallOptions();
+        o.ImageFile = a[1]; o.Index = int.Parse(a[2]); o.Gpt = a[3] == "gpt";
+        o.WinGb = a.Length > 4 ? int.Parse(a[4]) : 0;
+        o.Recovery = true; o.DataPartition = o.WinGb > 0;
+        StringBuilder log = new StringBuilder();
+        int code = 1;
+        try
+        {
+            DiskInfo target = null;
+            foreach (DiskInfo d in Disks.List(null)) if (d.Number == diskNo) target = d;
+            if (target == null) throw new InvalidOperationException("disk " + diskNo + " not found");
+            if (target.PnpId.ToUpperInvariant().IndexOf("PROD_VIRTUAL_DISK") < 0)
+                throw new InvalidOperationException("REFUSED: disk " + diskNo + " (" + target.Model + ", " + target.PnpId + ") is not a virtual disk");
+            o.Disk = target;
+            log.AppendLine("target: disk " + diskNo + " " + target.Model + " " + Fmt.Size(target.Size));
+            Installer.Run(o, new LogProgress(log));
+            log.AppendLine("E2E OK");
+            code = 0;
+        }
+        catch (Exception ex) { log.AppendLine("E2E FAILED: " + ex.Message); }
+        try { File.WriteAllText(outFile, log.ToString(), Encoding.UTF8); } catch (Exception) { }
+        return code;
+    }
+
+    sealed class LogProgress : IProgress2
+    {
+        readonly StringBuilder sb;
+        public LogProgress(StringBuilder sb) { this.sb = sb; }
+        public void Log(string line) { lock (sb) { sb.AppendLine(line); } }
+        public void Percent(int percent) { }
+        public void Indeterminate() { }
+        public void Status(string text) { lock (sb) { sb.AppendLine("[status] " + text); } }
+    }
+
+    public static int Run(string outFile)
+    {
+        sb.AppendLine("Windows Installer " + AppInfo.Version + " self-test");
+        try
+        {
+            Strings();
+            Scripts();
+            Parsing();
+            Environment_();
+            OpenImages();
+        }
+        catch (Exception ex) { Check("unexpected exception", false, ex.ToString()); }
+        sb.AppendLine(fails == 0 ? "ALL OK" : fails + " FAILED");
+        try { if (!string.IsNullOrEmpty(outFile)) File.WriteAllText(outFile, sb.ToString(), Encoding.UTF8); } catch (Exception) { }
+        return fails == 0 ? 0 : 1;
+    }
+
+    static void Strings()
+    {
+        int n = 0, bad = 0;
+        StringBuilder why = new StringBuilder();
+        foreach (string key in S.Keys)
+        {
+            n++;
+            string[] ph = new string[3];
+            for (int l = 0; l < 3; l++)
+            {
+                string v = S.Raw(key, l);
+                if (string.IsNullOrEmpty(v)) { bad++; why.Append(key + "[" + l + "] empty; "); continue; }
+                List<string> found = new List<string>();
+                foreach (Match m in Regex.Matches(v, @"\{(\d+)\}")) if (!found.Contains(m.Value)) found.Add(m.Value);
+                found.Sort();
+                ph[l] = string.Join(",", found.ToArray());
+            }
+            if (ph[0] != ph[1] || ph[1] != ph[2]) { bad++; why.Append(key + " placeholders differ (" + ph[0] + " | " + ph[1] + " | " + ph[2] + "); "); }
+        }
+        Check("strings: " + n + " keys, all languages filled, placeholders equal", bad == 0, why.ToString());
+    }
+
+    static void Scripts()
+    {
+        DiskInfo d = new DiskInfo();
+        d.Number = 3; d.Size = 250L * 1073741824L;
+        InstallOptions o = new InstallOptions();
+        o.Disk = d; o.ImageFile = "x.wim"; o.Index = 1;
+
+        // GPT, whole disk, recovery
+        o.Gpt = true; o.Recovery = true; o.WinGb = 0; o.DataPartition = false;
+        List<string> s = Installer.DiskpartScript(o, "S", "W", "R", "D");
+        Check("diskpart GPT whole disk: starts with select disk 3 / clean", s[0] == "select disk 3" && Has(s, "clean"), null);
+        Check("diskpart GPT: convert gpt + efi, no duplicate msr", Has(s, "convert gpt") && Has(s, "create partition efi size=260") && !Has(s, "create partition msr size=16"), null);
+        Check("diskpart GPT whole disk: shrink for recovery", Has(s, "shrink desired=1000 minimum=1000"), null);
+        Check("diskpart GPT: recovery type id set with override", Has(s, "set id=\"de94bba4-06d1-4d40-a16a-bfd50179d6ac\" override"), null);
+        Check("diskpart: every format has override", s.FindAll(delegate(string x) { return x.StartsWith("format "); }).TrueForAll(delegate(string x) { return x.EndsWith("override"); }), null);
+
+        // GPT, custom size + data
+        o.WinGb = 60; o.DataPartition = true;
+        s = Installer.DiskpartScript(o, "S", "W", "R", "D");
+        Check("diskpart custom size: Windows partition 61440 MB", Has(s, "create partition primary size=61440"), null);
+        Check("diskpart custom size: no shrink, recovery has fixed size", !Has(s, "shrink desired=1000 minimum=1000") && Has(s, "create partition primary size=1000"), null);
+        Check("diskpart custom size: Data volume", Has(s, "format quick fs=ntfs label=\"Data\" override") && Has(s, "assign letter=D"), null);
+
+        // MBR
+        o.Gpt = false; o.WinGb = 0; o.DataPartition = false;
+        s = Installer.DiskpartScript(o, "S", "W", "R", "D");
+        Check("diskpart MBR: convert mbr, active system partition, recovery id 27", Has(s, "convert mbr") && Has(s, "active") && Has(s, "set id=27 override"), null);
+        Check("diskpart MBR: no efi/msr", !Has(s, "create partition efi size=260") && !Has(s, "create partition msr size=16"), null);
+
+        // validation
+        o.Gpt = true; o.WinGb = 250; o.Recovery = true;
+        Check("validate: 250 GB partition on a 250 GB disk is rejected", Installer.Validate(o) != null, null);
+        o.WinGb = 100;
+        Check("validate: 100 GB on a 250 GB disk is accepted", Installer.Validate(o) == null, Installer.Validate(o));
+        o.WinGb = 15;
+        Check("validate: 15 GB is rejected", Installer.Validate(o) != null, null);
+        o.WinGb = 100;
+        Check("leftover for Data: about 148 GB", Installer.LeftoverGb(o) >= 145 && Installer.LeftoverGb(o) <= 150, Installer.LeftoverGb(o).ToString());
+    }
+
+    static void Parsing()
+    {
+        string sample =
+            "Deployment Image Servicing and Management tool\r\nVersion: 10.0.19041.3636\r\n\r\nDetails for image : E:\\sources\\install.wim\r\n\r\n" +
+            "Index : 1\r\nName : Windows 10 Home\r\nDescription : Windows 10 Home\r\nSize : 15,000,000,000 bytes\r\n\r\n" +
+            "Index : 2\r\nName : Windows 10 Pro\r\nDescription : Windows 10 Pro\r\nSize : 15,100,000,000 bytes\r\n\r\nThe operation completed successfully.\r\n";
+        List<Edition> eds = Images.ParseEditions(sample);
+        Check("DISM output: 2 editions parsed", eds.Count == 2 && eds[1].Index == 2 && eds[1].Name == "Windows 10 Pro", eds.Count.ToString());
+        Check("edition choice prefers Pro", Images.PreferPro(eds).Index == 2, null);
+        Check("version compare: v1.10.0 > 1.9.3", Updater.Parse("v1.10.0") > Updater.Parse("1.9.3"), null);
+        Check("version compare: 1.2.0-dev equals 1.2.0", Updater.Parse("1.2.0-dev") == Updater.Parse("1.2.0"), null);
+        Check("safe image name is ASCII", Regex.IsMatch(WinPeCapture.SafeName("Моя сборка 1"), "^[A-Za-z0-9_.\\-]+$"), WinPeCapture.SafeName("Моя сборка 1"));
+    }
+
+    // Optional, read-only: "--iso <file.iso|wim|esd>" opens the image (mounts an ISO read-only) and lists its editions.
+    sealed class NullProgress : IProgress2
+    {
+        public void Log(string line) { }
+        public void Percent(int percent) { }
+        public void Indeterminate() { }
+        public void Status(string text) { }
+    }
+
+    static void OpenImages()
+    {
+        string[] a = Environment.GetCommandLineArgs();
+        for (int i = 0; i < a.Length - 1; i++)
+        {
+            if (a[i] != "--iso") continue;
+            string path = a[i + 1];
+            ImageSource src = null;
+            try
+            {
+                src = Images.Open(path, new NullProgress());
+                List<Edition> eds = Images.ListEditions(src.ImageFile);
+                string how = src.MountLetter != null ? "mounted as " + src.MountLetter + ":" : (src.ExtractDir != null ? "extracted" : "plain image");
+                Check("open " + Path.GetFileName(path) + " (" + how + ")", eds.Count > 0, eds.Count + " editions: " + string.Join("; ", eds.ConvertAll<string>(delegate(Edition e) { return e.Index + "=" + e.Name; }).ToArray()));
+            }
+            catch (Exception ex) { Check("open " + Path.GetFileName(path), false, ex.Message); }
+            finally { if (src != null) src.Dispose(); }
+        }
+    }
+
+    static void Environment_()
+    {
+        sb.AppendLine("INFO  WinPE=" + Env.IsWinPE + ", firmware=" + Env.Firmware() + ", OS=" + Environment.OSVersion.VersionString + ", .NET=" + Environment.Version);
+        try
+        {
+            List<DiskInfo> list = Disks.List(null);
+            Check("WMI disk list", list.Count > 0, list.Count + " disks");
+            foreach (DiskInfo di in list)
+                sb.AppendLine("INFO  disk " + di.Number + ": " + di.Model + ", " + Fmt.Size(di.Size) + ", " + di.Bus + ", " + di.Style + ", volumes=[" + di.VolumesText + "]" + (di.Blocked ? ", BLOCKED(" + di.BlockReason + ")" : ""));
+            int blockedCount = 0;
+            foreach (DiskInfo di in list) if (di.Blocked) blockedCount++;
+            if (!Env.IsWinPE) Check("system disk is blocked", blockedCount >= 1, null);
+        }
+        catch (Exception ex) { Check("WMI disk list", false, ex.Message); }
+        List<string> free = Disks.FreeLetters();
+        Check("free drive letters available", free.Count >= 4, free.Count + " free");
+        try
+        {
+            string c = CaptureCmd.Build("E:\\Images", "Test_1", "fast");
+            Check("capture.cmd text generated", c.Contains("/Compress:fast") && c.Contains("Test_1.wim") && c.Contains("%~d0\\Images") && !c.Contains("@@"), null);
+        }
+        catch (Exception ex) { Check("capture.cmd text generated", false, ex.Message); }
+    }
+}
