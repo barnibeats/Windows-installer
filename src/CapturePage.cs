@@ -18,6 +18,8 @@ class CapturePage : Page
     readonly PillBox tbDest = new PillBox(), tbName = new PillBox();
     readonly DropPill ddComp = new DropPill(), ddSrc = new DropPill();
     readonly CheckPill chkAdmin = new CheckPill(), chkXml = new CheckPill(), chkKeep = new CheckPill();
+    readonly CheckPill chkWin = new CheckPill(), chkClean = new CheckPill(), chkLnkAll = new CheckPill(), chkTasks = new CheckPill();
+    readonly PillButton btnWin = new PillButton();
     readonly Txt lblDest = new Txt(), lblName = new Txt(), lblComp = new Txt(), lblSrc = new Txt(), lblState = new Txt(), help = new Txt();
     readonly Txt lblStatus = new Txt();
     readonly ToolTip tips = new ToolTip();
@@ -72,6 +74,19 @@ class CapturePage : Page
             cChecks.Controls.Add(frChecks);
             cDest.Controls.Add(chkAdmin); cDest.Controls.Add(chkXml); cDest.Controls.Add(chkKeep);
             chkAdmin.Checked = true; chkKeep.Checked = true; chkXml.Checked = false;
+            cDest.Controls.Add(chkWin); cDest.Controls.Add(btnWin); cDest.Controls.Add(chkClean); cDest.Controls.Add(chkLnkAll); cDest.Controls.Add(chkTasks); chkTasks.Checked = true;
+            chkClean.Checked = true; btnWin.Kind = BtnKind.Ghost; btnWin.Enabled = false;
+            chkWin.CheckedChanged += delegate
+            {
+                btnWin.Enabled = chkWin.Checked && !busy;
+                chkXml.Enabled = !chkWin.Checked;   // the Windows settings answer file replaces the simple one
+                if (chkWin.Checked) chkXml.Checked = false;
+            };
+            btnWin.Click += delegate
+            {
+                WinSettings w = WinSettingsDialog.Edit(FindForm(), WinProfile.Current, false);
+                if (w != null) WinProfile.Current = w;
+            };
             cActions.Controls.Add(btnCmd); cActions.Controls.Add(btnRun);
             btnCheck.Click += delegate { RunChecks(); };
             btnCmd.Click += delegate { MakeCmd(); };
@@ -113,6 +128,10 @@ class CapturePage : Page
         int sel = ddComp.SelectedIndex;
         ddComp.UpdateItems(new string[] { S.T("cap.comp.max"), S.T("cap.comp.fast"), S.T("cap.comp.none") });
         chkAdmin.Text = S.T("cap.opt.admin"); chkXml.Text = S.T("cap.opt.xml"); chkKeep.Text = S.T("cap.opt.keep");
+        chkTasks.Text = S.T("cap.opt.tasks"); tips.SetToolTip(chkTasks, S.T("cap.opt.tasks.tip"));
+        chkLnkAll.Text = S.T("cap.opt.lnkall"); tips.SetToolTip(chkLnkAll, S.T("cap.opt.lnkall.tip"));
+        chkWin.Text = S.T("cap.win.use"); btnWin.Text = S.T("win.btn"); chkClean.Text = S.T("cap.clean.use");
+        tips.SetToolTip(chkWin, S.T("cap.win.tip")); tips.SetToolTip(chkClean, S.T("cap.clean.tip"));
         tips.SetToolTip(chkAdmin, S.T("cap.opt.admin.tip")); tips.SetToolTip(chkXml, S.T("cap.opt.xml.tip")); tips.SetToolTip(chkKeep, S.T("cap.opt.keep.tip"));
         btnCmd.Text = S.T("cap.btn.cmd"); btnRun.Text = S.T("cap.btn.run");
         lblSrc.Text = S.T("cap.src"); btnSrcRefresh.Text = S.T("cap.btn.refresh"); btnCapture.Text = S.T("cap.btn.capture");
@@ -142,9 +161,11 @@ class CapturePage : Page
             cChecks.SetBounds(m, y0, leftW, topH);
             btnCheck.SetBounds(14, 44, 130, 30);
             frChecks.SetBounds(14, 82, leftW - 28, topH - 82 - 14);
-            cDest.SetBounds(rx, y0, rightW, 218);
-            cActions.SetBounds(rx, y0 + 218 + gap, rightW, 104);
-            cHelp.SetBounds(rx, y0 + 218 + gap + 104 + gap, rightW, Math.Max(80, topH - 218 - 104 - 2 * gap));
+            cDest.SetBounds(rx, y0, rightW, 330);
+            cActions.SetBounds(rx, y0 + 330 + gap, rightW, 104);
+            int hh = topH - 330 - 104 - 2 * gap;
+            cHelp.SetBounds(rx, y0 + 330 + gap + 104 + gap, rightW, Math.Max(80, hh));
+            cHelp.Visible = hh >= 80;   // on a small window the hint card gives way
             int w = rightW;
             lblDest.SetBounds(16, 55, 70, 20);
             tbDest.SetBounds(86, 48, w - 86 - 14 - 104 - 8, 32);
@@ -156,6 +177,11 @@ class CapturePage : Page
             chkAdmin.SetBounds(16, 126, w - 32, 24);
             chkXml.SetBounds(16, 154, w - 32, 24);
             chkKeep.SetBounds(16, 182, w - 32, 24);
+            chkLnkAll.SetBounds(16, 210, w - 32, 24);
+            chkTasks.SetBounds(16, 238, w - 32, 24);
+            chkWin.SetBounds(16, 266, w - 32 - 128, 24);
+            btnWin.SetBounds(w - 14 - 120, 262, 120, 32);
+            chkClean.SetBounds(16, 298, w - 32, 24);
             // actions: two buttons side by side keeps the card compact
             int half = (rightW - 28 - 8) / 2;
             btnCmd.SetBounds(14, 46, half, 44);
@@ -317,7 +343,13 @@ class CapturePage : Page
         log.AppendText(S.F("cap.log.cmd", cmdPath) + "\r\n");
         if (!Dlg.ConfirmTyped(FindForm(), S.T("cap.confirm.title"), S.T("cap.confirm.body"), "SYSPREP", S.T("cap.confirm.ok"))) return;
 
-        bool keepAdmin = chkAdmin.Checked, useXml = chkXml.Checked, keepLnk = chkKeep.Checked;
+        bool keepAdmin = chkAdmin.Checked, useXml = chkXml.Checked, keepLnk = chkKeep.Checked, useWin = chkWin.Checked, clean = chkClean.Checked, lnkAll = chkLnkAll.Checked, keepTasks = chkTasks.Checked;
+        WinSettings ws = WinProfile.Current;
+        if (useWin)
+        {
+            string werr = ws.Validate(false);
+            if (werr != null) { Dlg.Msg(FindForm(), S.T(werr), DlgKind.Warn); return; }
+        }
         SetBusy(true);
         btnRun.Enabled = false;
         Thread t = new Thread(delegate()
@@ -329,11 +361,18 @@ class CapturePage : Page
                 if (keepLnk)
                 {
                     prog.Status(S.T("cap.log.keep.run"));
-                    int n = ProfileKeeper.Backup(prog);
+                    int n = ProfileKeeper.Backup(prog, lnkAll);
                     prog.Log(S.F("cap.log.keep", n));
                 }
+                if (clean) { prog.Status(S.T("cap.clean.run")); WinDeploy.PreSysprepCleanup(prog); }
+                if (keepTasks)
+                {
+                    prog.Status(S.T("cap.log.tasks.run"));
+                    prog.Log(S.F("cap.log.tasks", TaskKeeper.Backup(prog)));
+                }
                 string xml = null;
-                if (useXml) { xml = Unattend.Write(); prog.Log(S.F("cap.log.xml", xml)); }
+                if (useWin) { xml = WinDeploy.PrepareCapture(ws, prog); prog.Log(S.F("cap.log.xml", xml)); }
+                else if (useXml) { xml = Unattend.Write(); prog.Log(S.F("cap.log.xml", xml)); }
                 SysprepRunner.Run(xml, prog, delegate(List<string> bad)
                 {
                     bool yes = false;

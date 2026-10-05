@@ -161,6 +161,20 @@ static class CaptureChecks
         }
         catch (Exception) { r.Add("info", S.T("cap.chk.apps.unk")); }
 
+        // Task Scheduler: custom tasks and those that store a password (Sysprep drops the stored password)
+        try
+        {
+            List<string> tAll, tPw;
+            TaskKeeper.Scan(out tAll, out tPw);
+            r.Add("info", S.F("cap.chk.tasks", tAll.Count));
+            if (tPw.Count > 0)
+            {
+                r.Add("warn", S.F("cap.chk.tasks.pw", tPw.Count));
+                for (int i = 0; i < Math.Min(6, tPw.Count); i++) r.Add("info", "    " + tPw[i]);
+            }
+        }
+        catch (Exception) { }
+
         // programs installed outside the system drive
         List<string> other = new List<string>();
         foreach (string key in new string[] { @"SOFTWARE\Microsoft\Windows\CurrentVersion\Uninstall", @"SOFTWARE\WOW6432Node\Microsoft\Windows\CurrentVersion\Uninstall" })
@@ -272,7 +286,7 @@ New-Item -ItemType File -Path $flag -Force -ErrorAction SilentlyContinue | Out-N
 ";
 
     // Returns the number of folders saved.
-    public static int Backup(IProgress2 prog)
+    public static int Backup(IProgress2 prog, bool allToPublic)
     {
         string root = Path.Combine(Environment.GetEnvironmentVariable("ProgramData") ?? "C:\\ProgramData", "ProfileKeeper");
         if (Directory.Exists(root)) Directory.Delete(root, true);
@@ -290,7 +304,8 @@ New-Item -ItemType File -Path $flag -Force -ErrorAction SilentlyContinue | Out-N
             {
                 string src = Path.Combine(u, pr[0]);
                 if (!Directory.Exists(src)) continue;
-                string dst = Path.Combine(Path.Combine(root, n), pr[1]);
+                // allToPublic: every user's desktop shortcuts are merged into the shared desktop, so all accounts see them
+                string dst = Path.Combine(Path.Combine(root, allToPublic && pr[1] == "Desktop" ? "Public" : n), pr[1]);
                 int code = Proc.Run("robocopy.exe", "\"" + src + "\" \"" + dst + "\" *.lnk *.url /S /R:1 /W:1 /NFL /NDL /NJH /NJS /NP", null);
                 if (code < 8) count++;
             }
@@ -312,11 +327,17 @@ static class Unattend
     // Skips OOBE so that, after the first start, the existing accounts can sign in right away.
     // Language, keyboard and time zone are taken from the current system.
     // SkipMachineOOBE/SkipUserOOBE are deprecated; where ignored, the normal OOBE runs.
-    public static string Write()
+    public static string Arch()
     {
         string arch = "amd64";
         string pa = Environment.GetEnvironmentVariable("PROCESSOR_ARCHITECTURE") ?? "AMD64";
         if (pa.Equals("ARM64", StringComparison.OrdinalIgnoreCase)) arch = "arm64"; else if (pa.Equals("x86", StringComparison.OrdinalIgnoreCase)) arch = "x86";
+        return arch;
+    }
+
+    public static string Write()
+    {
+        string arch = Arch();
         string ui = CultureInfo.CurrentUICulture.Name;
         string loc = CultureInfo.CurrentCulture.Name;
         string klid = Native.KeyboardLayoutId();

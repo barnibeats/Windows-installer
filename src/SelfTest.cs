@@ -65,6 +65,7 @@ static class SelfTest
         {
             Strings();
             Scripts();
+            WinFiles();
             Parsing();
             Environment_();
             OpenImages();
@@ -135,6 +136,60 @@ static class SelfTest
         Check("validate: 15 GB is rejected", Installer.Validate(o) != null, null);
         o.WinGb = 100;
         Check("leftover for Data: about 148 GB", Installer.LeftoverGb(o) >= 145 && Installer.LeftoverGb(o) <= 150, Installer.LeftoverGb(o).ToString());
+    }
+
+    // Answer file and first-logon script built from the Windows settings.
+    static void WinFiles()
+    {
+        WinSettings w = new WinSettings();
+        w.AdminPassword = "Sekret1"; w.UserPassword = "Sekret2";
+        string full = WinDeploy.BuildXml(w, true, "amd64");
+        string cap = WinDeploy.BuildXml(w, false, "amd64");
+        string pre = WinDeploy.BuildPretail(w);
+        string b1 = Convert.ToBase64String(Encoding.Unicode.GetBytes("Sekret1AdministratorPassword"));
+        string b2 = Convert.ToBase64String(Encoding.Unicode.GetBytes("Sekret2Password"));
+        try
+        {
+            System.Xml.XmlDocument d = new System.Xml.XmlDocument(); d.LoadXml(full);
+            System.Xml.XmlDocument c = new System.Xml.XmlDocument(); c.LoadXml(cap);
+            Check("win xml: well-formed, CopyProfile false, first-logon pretail, SkipRearm",
+                full.Contains("<CopyProfile>false</CopyProfile>") && full.Contains("C:\\WINDOWS\\system32\\pretail.cmd") && full.Contains("<SkipRearm>1</SkipRearm>"), null);
+        }
+        catch (Exception ex) { Check("win xml: well-formed", false, ex.Message); }
+        Check("win xml: accounts, auto logon (1 logon) and passwords as the answer file expects",
+            full.Contains(b1) && full.Contains(b2) && full.Contains("<LogonCount>1</LogonCount>") && full.Contains("<Name>Пользователь</Name>"), null);
+        Check("win xml for the capture image has no passwords, accounts or auto logon",
+            !cap.Contains(b1) && !cap.Contains(b2) && !cap.Contains("Sekret") && !cap.Contains("<AutoLogon>") && !cap.Contains("<LocalAccount ") && cap.Contains("<FirstLogonCommands>"), null);
+        Check("pretail.cmd has no passwords", !pre.Contains("Sekret") && !pre.Contains(b1) && !pre.Contains(b2), null);
+        Check("pretail.cmd: RDP 4444, ICMP, KMS retry, answer file cleanup, self-delete is the last line",
+            pre.Contains("/d 4444") && pre.Contains("P_RETAIL_ICMPv4_Echo_In") && pre.Contains(":kms") && pre.Contains("Panther\\Unattend\\unattend.xml") &&
+            pre.TrimEnd().EndsWith("del /f /q \"%~f0\""), null);
+        w.RdpPort = 0; w.Kms = ""; w.UserName = "";
+        string pre2 = WinDeploy.BuildPretail(w);
+        Check("pretail.cmd: RDP and KMS are skipped when switched off", !pre2.Contains("Terminal Server") && !pre2.Contains(":kms") && !pre2.Contains("slmgr"), null);
+
+        WinSettings v = new WinSettings(); v.AdminPassword = "a"; v.UserPassword = "b";
+        Check("win settings: defaults are valid", v.Validate(true) == null, v.Validate(true));
+        v.Kms = "bad host;calc"; Check("win settings: KMS with shell characters is rejected", v.Validate(true) == "win.err.kms", null);
+        v.Kms = "k.motto.ua:9876"; v.RdpPort = 70000; Check("win settings: RDP port 70000 is rejected", v.Validate(true) == "win.err.port", null);
+        v.RdpPort = 4444; v.UserName = "bad\"name"; Check("win settings: quote in the user name is rejected", v.Validate(true) == "win.err.user", null);
+        v.UserName = "Пользователь"; v.UserPassword = ""; Check("win settings: empty user password is rejected for an install", v.Validate(true) == "win.err.userpw" && v.Validate(false) == null, null);
+
+        string tmp = Path.Combine(Path.GetTempPath(), "wi_selftest_" + Guid.NewGuid().ToString("N"));
+        try
+        {
+            Directory.CreateDirectory(Path.Combine(tmp, "Windows\\System32"));
+            WinSettings s = new WinSettings(); s.AdminPassword = "Sekret1"; s.UserPassword = "Sekret2";
+            string prof = Path.Combine(tmp, "p.ini");
+            s.Save(prof);
+            Check("win settings: profile file has no passwords", !File.ReadAllText(prof, Encoding.UTF8).Contains("Sekret") && !File.ReadAllText(prof, Encoding.UTF8).ToLowerInvariant().Contains("password"), null);
+            WinSettings l = WinSettings.Load(prof);
+            Check("win settings: profile round trip", l.RdpPort == 4444 && l.UserName == "Пользователь" && l.DesktopIcons && l.AdminPassword.Length == 0, null);
+            WinDeploy.ApplyToTarget(tmp, s, new NullProgress());
+            Check("install: answer file and pretail.cmd written to the target", File.Exists(Path.Combine(tmp, "Windows\\Panther\\Unattend\\unattend.xml")) && File.Exists(Path.Combine(tmp, "Windows\\System32\\pretail.cmd")), null);
+        }
+        catch (Exception ex) { Check("install: files written to the target", false, ex.Message); }
+        finally { try { Directory.Delete(tmp, true); } catch (Exception) { } }
     }
 
     static void Parsing()

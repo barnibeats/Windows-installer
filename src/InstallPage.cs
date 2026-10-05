@@ -18,7 +18,8 @@ class InstallPage : Page
     readonly Txt lblEdition = new Txt(), lblDiskHint = new Txt(), lblFw = new Txt(), lblGb = new Txt(), lblDrivers = new Txt();
     readonly Txt lblSummary = new Txt(), lblStatus = new Txt();
     readonly CheckPill rbGpt = new CheckPill(), rbMbr = new CheckPill(), chkRecovery = new CheckPill();
-    readonly CheckPill rbAll = new CheckPill(), rbCustom = new CheckPill(), chkData = new CheckPill();
+    readonly CheckPill rbAll = new CheckPill(), rbCustom = new CheckPill(), chkData = new CheckPill(), chkWin = new CheckPill();
+    readonly PillButton btnWin = new PillButton();
     readonly Stepper stSize = new Stepper();
     readonly GradientBar bar = new GradientBar();
     readonly LogBox log = new LogBox();
@@ -69,6 +70,8 @@ class InstallPage : Page
         cParams.Controls.Add(rbGpt); cParams.Controls.Add(rbMbr); cParams.Controls.Add(lblFw); cParams.Controls.Add(chkRecovery);
         cParams.Controls.Add(rbAll); cParams.Controls.Add(rbCustom); cParams.Controls.Add(stSize); cParams.Controls.Add(lblGb); cParams.Controls.Add(chkData);
         cParams.Controls.Add(lblDrivers); cParams.Controls.Add(tbDrivers); cParams.Controls.Add(btnDrivers);
+        btnWin.Kind = BtnKind.Ghost; btnWin.Enabled = false;
+        cParams.Controls.Add(chkWin); cParams.Controls.Add(btnWin);
 
         // --- action area ---
         btnInstall.Kind = BtnKind.Danger;
@@ -98,6 +101,8 @@ class InstallPage : Page
                 if (d.ShowDialog(FindForm()) == DialogResult.OK) tbDrivers.Text = d.SelectedPath;
             }
         };
+        btnWin.Click += delegate { EditWinSettings(); };
+        chkWin.CheckedChanged += delegate { btnWin.Enabled = chkWin.Checked && !busy; UpdateSummary(); };
         btnSearch.Click += delegate { SearchIsos(); };
         btnRefresh.Click += delegate { RefreshDisks(); };
         lvImages.SelectedIndexChanged += delegate
@@ -136,6 +141,7 @@ class InstallPage : Page
         lblGb.Text = S.T("u.gb"); chkData.Text = S.T("inst.data");
         lblDrivers.Text = S.T("inst.drivers");
         btnDrivers.Text = S.T("inst.btn.browse");
+        chkWin.Text = S.T("inst.win.use"); btnWin.Text = S.T("win.btn");
         btnInstall.Text = S.T("inst.btn.install");
         if (!busy) lblStatus.Text = S.T("inst.ready");
         lblDiskHint.Text = S.T("inst.diskhint");
@@ -154,7 +160,7 @@ class InstallPage : Page
         int W = ClientSize.Width, H = ClientSize.Height;
         if (W < 300 || H < 300) return;
         int m = 16, gap = 12, colW = (W - 2 * m - gap) * 45 / 100, colW2 = W - 2 * m - gap - colW, y = 4;
-        int rowA = 252, rowB = 152;
+        int rowA = 252, rowB = 190;
         cImage.SetBounds(m, y, colW, rowA);
         cDisk.SetBounds(m + colW + gap, y, colW2, rowA);
         y += rowA + gap;
@@ -190,6 +196,8 @@ class InstallPage : Page
         lblDrivers.SetBounds(16, 121, 120, 20);
         btnDrivers.SetBounds(pw - 14 - 110, 114, 110, 32);
         tbDrivers.SetBounds(140, 114, pw - 14 - 110 - 8 - 140, 32);
+        chkWin.SetBounds(16, 154, Math.Max(200, pw - 14 - 190 - 8 - 16), 24);
+        btnWin.SetBounds(pw - 14 - 190, 150, 190, 32);
 
         // action row
         lblSummary.SetBounds(m, y, W - 2 * m - 270, 46);
@@ -428,7 +436,17 @@ class InstallPage : Page
         o.WinGb = WinGb;
         o.DataPartition = chkData.Checked && WinGb > 0;
         o.Drivers = tbDrivers.Text.Trim().Trim('"');
+        o.Win = chkWin.Checked ? WinProfile.Current : null;
         return o;
+    }
+
+    // Opens the settings dialog (passwords included); true when the settings were accepted.
+    bool EditWinSettings()
+    {
+        WinSettings w = WinSettingsDialog.Edit(FindForm(), WinProfile.Current, true);
+        if (w == null) return false;
+        WinProfile.Current = w;
+        return true;
     }
 
     void UpdateSummary()
@@ -457,6 +475,7 @@ class InstallPage : Page
     void SetControlsEnabled(bool on)
     {
         cImage.Enabled = on; cDisk.Enabled = on; cParams.Enabled = on;
+        btnWin.Enabled = on && chkWin.Checked;
         if (!on) btnInstall.Enabled = false; else UpdateSummary();
     }
 
@@ -464,6 +483,12 @@ class InstallPage : Page
     void StartInstall()
     {
         InstallOptions o = Options();
+        if (o.Win != null && o.Win.Validate(true) != null)
+        {
+            // passwords are never remembered, so they are asked for before every installation
+            if (!EditWinSettings()) return;
+            o.Win = WinProfile.Current;
+        }
         string err = Installer.Validate(o);
         if (err != null) { Dlg.Msg(FindForm(), err, DlgKind.Warn); return; }
         if (!o.Gpt && o.Disk.Size > 2199023255552L && !Dlg.Ask(FindForm(), S.T("inst.warn.mbr2tb"), DlgKind.Warn)) return;
@@ -477,6 +502,7 @@ class InstallPage : Page
             S.F("inst.confirm.size", Fmt.Size(o.Disk.Size), o.Disk.Bus) + "\r\n" +
             S.T("inst.confirm.scheme") + " " + mode + "\r\n" +
             S.T("inst.confirm.edition") + " " + editions[ddEdition.SelectedIndex].Name;
+        if (o.Win != null) body += "\r\n" + S.T("inst.confirm.win");
         if (!Dlg.ConfirmTyped(FindForm(), S.T("inst.confirm.title"), body, o.Disk.Number.ToString(), S.T("inst.confirm.ok"))) return;
 
         busy = true;
@@ -505,6 +531,7 @@ class InstallPage : Page
                 else
                 {
                     bar.Value = 100;
+                    WinProfile.Current.AdminPassword = ""; WinProfile.Current.UserPassword = "";   // do not keep passwords in memory
                     SetControlsEnabled(true);
                     RefreshDisks();
                     Dlg.Msg(FindForm(), S.F("inst.done.msg", o.Disk.Number), DlgKind.Info);

@@ -14,6 +14,7 @@ class InstallOptions
     public int WinGb;              // 0 = the whole disk
     public bool DataPartition;     // remaining space as a "Data" volume (only with WinGb > 0)
     public string Drivers = "";
+    public WinSettings Win;        // null = no answer file; otherwise written into the installed Windows
 
     public string ModeText { get { return Gpt ? "GPT / UEFI" : "MBR / BIOS"; } }
 }
@@ -41,6 +42,11 @@ static class Installer
                 return S.F("inst.err.toobig", o.WinGb, diskMb / 1024, (need - (long)o.WinGb * 1024 + 1023) / 1024);
         }
         if (!string.IsNullOrEmpty(o.Drivers) && !Directory.Exists(o.Drivers)) return S.T("inst.err.drivers");
+        if (o.Win != null)
+        {
+            string we = o.Win.Validate(true);
+            if (we != null) return S.T(we);
+        }
         return null;
     }
 
@@ -175,6 +181,13 @@ static class Installer
             if (code != 0) prog.Log(S.T("inst.warn.drivers"));
         }
         try { Directory.Delete(scratch, true); } catch (Exception) { }
+
+        // 3b. answer file and first-logon script (passwords are written only here, to the target disk)
+        if (o.Win != null)
+        {
+            prog.Log("== " + S.T("win.log.head") + " ==");
+            WinDeploy.ApplyToTarget(lw + ":\\", o.Win, prog);
+        }
 
         // 4. boot files
         prog.Status(S.T("inst.step4")); prog.Log("== " + S.T("inst.log.boot") + " ==");
